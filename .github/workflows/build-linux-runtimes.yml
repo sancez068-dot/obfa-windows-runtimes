@@ -1,0 +1,87 @@
+name: Build Linux Runtimes
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - runtime.c
+      - .github/workflows/build-linux-runtimes.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+
+    name: Linux x64 CPython ${{ matrix.python }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+
+      - name: Build .so
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PYVER="$(python -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
+          PYTAG="cp${PYVER}"
+          OUT="runtime-${PYTAG}-linux_x86_64.so"
+          MODULE="_mXkz2C4L16bEYJhyUXGQCOv"
+
+          INCLUDE="$(python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+
+          test -d "$INCLUDE" || {
+            echo "Python headers not found: $INCLUDE"
+            exit 1
+          }
+
+          gcc \
+            -shared \
+            -fPIC \
+            -O2 \
+            -fno-ident \
+            -fvisibility=hidden \
+            -I"$INCLUDE" \
+            runtime.c \
+            -o "$OUT"
+
+          test -f "$OUT"
+
+          python - <<PY
+          import json, pathlib, sys
+          p = pathlib.Path("$OUT")
+          meta = {
+              "platform": "linux",
+              "arch": "x86_64",
+              "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+              "abi": "$PYTAG",
+              "module": "$MODULE",
+              "file": p.name,
+              "size": p.stat().st_size
+          }
+          pathlib.Path("runtime.json").write_text(
+              json.dumps(meta, indent=2) + "\\n",
+              encoding="utf-8"
+          )
+          print(p.name, p.stat().st_size, "bytes")
+          print(json.dumps(meta, indent=2))
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.python }}-linux_x86_64
+          path: |
+            runtime-cp*-linux_x86_64.so
+            runtime.json
+          if-no-files-found: error
+
