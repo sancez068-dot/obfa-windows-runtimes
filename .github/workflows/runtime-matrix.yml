@@ -42,6 +42,9 @@ jobs:
       - name: Test import
         run: python tests/test_runtime_import.py
 
+      - name: Test malformed containers
+        run: python tests/test_runtime_behavior.py
+
       - name: Upload runtime
         uses: actions/upload-artifact@v4
         with:
