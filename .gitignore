@@ -1,0 +1,6 @@
+
+*.so
+*.pyd
+build/
+build.log
+__pycache__/
