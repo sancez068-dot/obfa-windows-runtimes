@@ -1,0 +1,113 @@
+name: Native runtime matrix
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "protector_core/native/**"
+      - "protector_core/packer/embed.py"
+      - "tools/rebuild_host_runtime.py"
+      - ".github/workflows/runtime-matrix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / CPython ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, runner: windows-latest, python: "3.11", slot: "311" }
+          - { os: windows, runner: windows-latest, python: "3.12", slot: "312" }
+          - { os: windows, runner: windows-latest, python: "3.13", slot: "313" }
+          - { os: windows, runner: windows-latest, python: "3.14", slot: "314" }
+
+          - { os: linux, runner: ubuntu-22.04, python: "3.11", slot: "311" }
+          - { os: linux, runner: ubuntu-22.04, python: "3.12", slot: "312" }
+          - { os: linux, runner: ubuntu-22.04, python: "3.13", slot: "313" }
+          - { os: linux, runner: ubuntu-22.04, python: "3.14", slot: "314" }
+
+          # Intel x86_64: exactly one macOS architecture, keeping the matrix at 12 runtimes.
+          - { os: macos, runner: macos-15-intel, python: "3.11", slot: "311" }
+          - { os: macos, runner: macos-15-intel, python: "3.12", slot: "312" }
+          - { os: macos, runner: macos-15-intel, python: "3.13", slot: "313" }
+          - { os: macos, runner: macos-15-intel, python: "3.14", slot: "314" }
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up CPython
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+
+      - name: Enable MSVC
+        if: matrix.os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install test dependencies
+        run: python -m pip install cryptography pytest
+
+      - name: Build native runtime
+        run: python tools/rebuild_host_runtime.py
+
+      - name: Verify slot
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, platform, sys
+          from pathlib import Path
+
+          expected = "${{ matrix.os }}-amd64-cp${{ matrix.slot }}"
+          root = Path("protector_core/native/runtimes") / expected
+          binary = root / ("runtime.pyd" if "${{ matrix.os }}" == "windows" else "runtime.so")
+
+          assert root.is_dir(), root
+          assert binary.is_file(), binary
+          info = json.loads((root / "runtime.json").read_text())
+          assert info["python"] == "${{ matrix.python }}", info
+          assert info["platform"] == expected.rsplit("-cp", 1)[0], info
+          print("slot:", expected)
+          print("python:", sys.version)
+          print("machine:", platform.machine())
+          print("binary:", binary, binary.stat().st_size, "bytes")
+          print("module:", info["module"])
+          PY
+
+      - name: Upload runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.os }}-amd64-cp${{ matrix.slot }}
+          path: protector_core/native/runtimes/${{ matrix.os }}-amd64-cp${{ matrix.slot }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  bundle:
+    name: Bundle all 12 runtimes
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all runtimes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: dist
+          merge-multiple: false
+
+      - name: Show result
+        run: |
+          find dist -maxdepth 3 -type f -printf "%p %s bytes\n" | sort
+
+      - name: Upload 12-runtime bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-runtimes-12
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
