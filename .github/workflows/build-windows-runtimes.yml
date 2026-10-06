@@ -1,0 +1,80 @@
+name: Build Windows runtimes
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - runtime.c
+      - .github/workflows/build-windows-runtimes.yml
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build .pyd
+        shell: pwsh
+        run: |
+          $ver = python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
+          $module = "_mXkz2C4L16bEYJhyUXGQCOv"
+          $out = "runtime-cp$ver-win_amd64.pyd"
+          $include = python -c "import sysconfig; print(sysconfig.get_path('include'))"
+          $python = (Get-Command python).Source
+          $pythonRoot = Split-Path $python -Parent
+          $lib = "python$ver.lib"
+
+          if (!(Test-Path $include)) { throw "Python headers not found: $include" }
+
+          $libCandidates = @(
+            (Join-Path $pythonRoot $lib),
+            (Join-Path $pythonRoot "libs\$lib")
+          )
+
+          $libPath = $null
+          foreach ($candidate in $libCandidates) {
+            if (Test-Path $candidate) {
+              $libPath = $candidate
+              break
+            }
+          }
+
+          if (!$libPath) {
+            $libPath = Get-ChildItem -Path $pythonRoot -Filter $lib -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (!$libPath) { throw "Python import library not found: $lib" }
+
+          $libdir = Split-Path $libPath -Parent
+
+          Write-Host "Python: $python"
+          Write-Host "Include: $include"
+          Write-Host "Import library: $libPath"
+
+          cl /nologo /LD /O2 /GS /EHsc /I"$include" runtime.c /link /OUT:"$out" /LIBPATH:"$libdir" "$lib"
+
+          if (!(Test-Path $out)) { throw "Build failed: $out" }
+          python -c "import pathlib; p=pathlib.Path('$out'); print(p.name, p.stat().st_size, 'bytes')"
+
+      - name: Upload runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.python }}-win_amd64
+          path: runtime-cp*-win_amd64.pyd
+          if-no-files-found: error
